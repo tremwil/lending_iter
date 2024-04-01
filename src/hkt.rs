@@ -1,5 +1,6 @@
-use core::{fmt::Error, marker::PhantomData};
+use core::marker::PhantomData;
 
+use crate::fn_traits::Mapper;
 pub use crate::HKT;
 
 /// Trait representing higher kinded type (HKT) parametrized by a single lifetime.
@@ -20,9 +21,9 @@ pub trait HKT {
 }
 impl<T> HKT for PhantomData<T>
 where
-    T: for<'a> FnOnce<(&'a (),)>,
+    T: for<'a> Mapper<'a, &'a ()>,
 {
-    type With<'a> = <T as FnOnce<(&'a (),)>>::Output
+    type With<'a> = <T as Mapper<'a, &'a ()>>::Output
         where
             Self: 'a;
 }
@@ -50,38 +51,4 @@ macro_rules! HKT {
 /// Preferable to transmuting directly.
 pub unsafe fn extend_lifetime<'a, 'b, T: HKT>(v: T::With<'b>) -> T::With<'a> {
     core::mem::transmute(v)
-}
-
-/// higher-kinded trait representing a generic Option<T>.
-pub trait OptionType {
-    type UnwrapT;
-
-    /// Reinterpret an instance of [`OptionType`] as its concrete
-    /// type, i.e. [`Option<UnwrapT>`].
-    fn make_concrete(self) -> Option<Self::UnwrapT>;
-}
-impl<T> OptionType for Option<T> {
-    type UnwrapT = T;
-
-    fn make_concrete(self) -> Option<Self::UnwrapT> {
-        self
-    }
-}
-
-/// higher-kinded trait representing a generic Result<T, E>.
-pub trait ResultType {
-    type OkT;
-    type ErrorT;
-
-    /// Reinterpret an instance of [`ResultType`] as its concrete
-    /// type, i.e. [`Result<OkT, ErrorT>`].
-    fn make_concrete(self) -> Result<Self::OkT, Self::ErrorT>;
-}
-impl<T, E> ResultType for Result<T, E> {
-    type OkT = T;
-    type ErrorT = E;
-
-    fn make_concrete(self) -> Result<Self::OkT, Self::ErrorT> {
-        self
-    }
 }

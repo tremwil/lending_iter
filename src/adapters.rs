@@ -1,5 +1,12 @@
-use crate::hkt::{extend_lifetime, OptionType, ResultType, HKT};
+use nougat::{apply, gat, Gat};
+
+#[gat(Item)]
 use crate::lending_iter::LendingIter;
+use crate::{
+    fn_traits::{Mapper, OptionMapper, Scanner},
+    hkt::{extend_lifetime, HKT},
+    lending_iter::LendedItem,
+};
 
 pub struct StepBy<I: LendingIter> {
     pub(crate) iter: I,
@@ -7,8 +14,9 @@ pub struct StepBy<I: LendingIter> {
     pub(crate) first: bool,
 }
 
+#[gat]
 impl<I: LendingIter> LendingIter for StepBy<I> {
-    type Item<'a> = I::Item<'a>
+    type Item<'a> = LendedItem<'a, I>
         where
             Self: 'a;
 
@@ -23,21 +31,23 @@ impl<I: LendingIter> LendingIter for StepBy<I> {
     }
 }
 
+#[apply(Gat!)]
 pub struct Chain<I, J>
 where
     I: LendingIter,
-    J: for<'a> LendingIter<Item<'a> = I::Item<'a>>,
+    J: for<'a> LendingIter<Item<'a> = LendedItem<'a, I>>,
 {
     pub(crate) a: Fuse<I>,
     pub(crate) b: J,
 }
 
+#[gat]
 impl<I, J> LendingIter for Chain<I, J>
 where
     I: LendingIter,
-    for<'a> J: 'a + LendingIter<Item<'a> = I::Item<'a>>,
+    J: for<'b> LendingIter<Item<'b> = LendedItem<'b, I>>,
 {
-    type Item<'a> = I::Item<'a>
+    type Item<'a> = LendedItem<'a, I>
         where
             Self: 'a;
 
@@ -55,12 +65,13 @@ where
     pub(crate) b: J,
 }
 
+#[gat]
 impl<I, J> LendingIter for Zip<I, J>
 where
     I: LendingIter,
     J: LendingIter,
 {
-    type Item<'a> = (I::Item<'a>, J::Item<'a>)
+    type Item<'a> = (LendedItem<'a, I>, LendedItem<'a, J>)
         where
             Self: 'a;
 
@@ -72,41 +83,43 @@ where
 pub struct Map<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut<(I::Item<'a>,)>,
+    F: for<'a> Mapper<'a, LendedItem<'a, I>>,
 {
     pub(crate) iter: I,
     pub(crate) fun: F,
 }
 
+#[gat]
 impl<I, F> LendingIter for Map<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut<(I::Item<'a>,)>,
+    F: for<'b> Mapper<'b, LendedItem<'b, I>>,
 {
-    type Item<'a> = <F as FnOnce<(I::Item<'a>,)>>::Output
+    type Item<'a> = <F as Mapper<'a, LendedItem<'a, I>>>::Output
         where
             Self: 'a;
 
     fn next(&mut self) -> Option<Self::Item<'_>> {
-        self.iter.next().map(&mut self.fun)
+        self.iter.next().map(|i| self.fun.call(i))
     }
 }
 
 pub struct Filter<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut(&I::Item<'a>) -> bool,
+    F: for<'a> FnMut(&LendedItem<'a, I>) -> bool,
 {
     pub(crate) iter: I,
     pub(crate) filter: F,
 }
 
+#[gat]
 impl<I, F> LendingIter for Filter<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut(&I::Item<'a>) -> bool,
+    F: for<'b> FnMut(&LendedItem<'b, I>) -> bool,
 {
-    type Item<'a> = I::Item<'a>
+    type Item<'a> = LendedItem<'a, I>
     where
         Self: 'a;
 
@@ -118,20 +131,19 @@ where
 pub struct FilterMap<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut<(I::Item<'a>,)>,
-    for<'a> <F as FnOnce<(I::Item<'a>,)>>::Output: OptionType,
+    F: for<'a> OptionMapper<'a, LendedItem<'a, I>>,
 {
     pub(crate) iter: I,
     pub(crate) filter: F,
 }
 
+#[gat]
 impl<I, F> LendingIter for FilterMap<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut<(I::Item<'a>,)>,
-    for<'a> <F as FnOnce<(I::Item<'a>,)>>::Output: OptionType,
+    F: for<'b> OptionMapper<'b, LendedItem<'b, I>>,
 {
-    type Item<'a> = <<F as FnOnce<(I::Item<'a>,)>>::Output as OptionType>::UnwrapT
+    type Item<'a> = <F as OptionMapper<'a, LendedItem<'a, I>>>::Output
         where
             Self: 'a;
 
@@ -140,9 +152,9 @@ where
             // SAFETY:
             //  The Item<'a> we are matching on is either dropped or returned by
             //  the end of this match block, so it never escapes its actual lifetime
-            match unsafe { extend_lifetime::<HKT!(Option<I::Item<'_>>)>(self.iter.next()) } {
+            match unsafe { extend_lifetime::<HKT!(Option<LendedItem<'_, I>>)>(self.iter.next()) } {
                 None => return None,
-                Some(item) => match (self.filter)(item).make_concrete() {
+                Some(item) => match self.filter.call(item) {
                     None => continue,
                     some => return some,
                 },
@@ -156,8 +168,9 @@ pub struct Enumerate<I: LendingIter> {
     pub(crate) count: usize,
 }
 
+#[gat]
 impl<I: LendingIter> LendingIter for Enumerate<I> {
-    type Item<'a> = (usize, I::Item<'a>)
+    type Item<'a> = (usize, LendedItem<'a, I>)
         where
             Self: 'a;
 
@@ -171,19 +184,20 @@ impl<I: LendingIter> LendingIter for Enumerate<I> {
 pub struct SkipWhile<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut(&I::Item<'a>) -> bool,
+    F: for<'a> FnMut(&LendedItem<'a, I>) -> bool,
 {
     pub(crate) iter: I,
     pub(crate) pred: F,
     pub(crate) done: bool,
 }
 
+#[gat]
 impl<I, F> LendingIter for SkipWhile<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut(&I::Item<'a>) -> bool,
+    F: for<'b> FnMut(&LendedItem<'b, I>) -> bool,
 {
-    type Item<'a> = I::Item<'a>
+    type Item<'a> = LendedItem<'a, I>
     where
         Self: 'a;
 
@@ -195,7 +209,8 @@ where
             // SAFETY:
             // There are never two mutable references to the item here. Either
             // we return it, or continue thus dropping it
-            let item = unsafe { extend_lifetime::<HKT!(Option<I::Item<'_>>)>(self.iter.next()) };
+            let item =
+                unsafe { extend_lifetime::<HKT!(Option<LendedItem<'_, I>>)>(self.iter.next()) };
             if item.as_ref().map(&mut self.pred) != Some(true) {
                 self.done = true;
                 return item;
@@ -207,18 +222,19 @@ where
 pub struct TakeWhile<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut(&I::Item<'a>) -> bool,
+    F: for<'a> FnMut(&LendedItem<'a, I>) -> bool,
 {
     pub(crate) iter: I,
     pub(crate) pred: F,
 }
 
+#[gat]
 impl<I, F> LendingIter for TakeWhile<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut(&I::Item<'a>) -> bool,
+    F: for<'b> FnMut(&LendedItem<'b, I>) -> bool,
 {
-    type Item<'a> = I::Item<'a>
+    type Item<'a> = LendedItem<'a, I>
     where
         Self: 'a;
 
@@ -234,25 +250,24 @@ where
 pub struct MapWhile<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut<(I::Item<'a>,)>,
-    for<'a> <F as FnOnce<(I::Item<'a>,)>>::Output: OptionType,
+    F: for<'a> OptionMapper<'a, LendedItem<'a, I>>,
 {
     pub(crate) iter: I,
     pub(crate) pred: F,
 }
 
+#[gat]
 impl<I, F> LendingIter for MapWhile<I, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut<(I::Item<'a>,)>,
-    for<'a> <F as FnOnce<(I::Item<'a>,)>>::Output: OptionType,
+    F: for<'b> OptionMapper<'b, LendedItem<'b, I>>,
 {
-    type Item<'a> = <<F as FnOnce<(I::Item<'a>,)>>::Output as OptionType>::UnwrapT
+    type Item<'a> = <F as OptionMapper<'a, LendedItem<'a, I>>>::Output
         where
             Self: 'a;
 
     fn next<'a>(&'a mut self) -> Option<Self::Item<'a>> {
-        self.iter.next().and_then(|i| (self.pred)(i).make_concrete())
+        self.iter.next().and_then(|i| self.pred.call(i))
     }
 }
 
@@ -261,8 +276,9 @@ pub struct Skip<I: LendingIter> {
     pub(crate) n: usize,
 }
 
+#[gat]
 impl<I: LendingIter> LendingIter for Skip<I> {
-    type Item<'a> = I::Item<'a>
+    type Item<'a> = LendedItem<'a, I>
         where
             Self: 'a;
 
@@ -282,8 +298,9 @@ pub struct Take<I: LendingIter> {
     pub(crate) n: usize,
 }
 
+#[gat]
 impl<I: LendingIter> LendingIter for Take<I> {
-    type Item<'a> = I::Item<'a>
+    type Item<'a> = LendedItem<'a, I>
         where
             Self: 'a;
 
@@ -301,68 +318,107 @@ impl<I: LendingIter> LendingIter for Take<I> {
 pub struct Scan<I, S, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut<(&'a mut S, I::Item<'a>)>,
-    for<'a> <F as FnOnce<(&'a mut S, I::Item<'a>)>>::Output: OptionType,
+    F: for<'a> Scanner<'a, S, LendedItem<'a, I>>,
 {
     pub(crate) iter: I,
     pub(crate) state: S,
     pub(crate) scan: F,
 }
 
+#[gat]
 impl<I, S, F> LendingIter for Scan<I, S, F>
 where
     I: LendingIter,
-    F: for<'a> FnMut<(&'a mut S, I::Item<'a>)>,
-    for<'a> <F as FnOnce<(&'a mut S, I::Item<'a>)>>::Output: OptionType,
+    F: for<'b> Scanner<'b, S, LendedItem<'b, I>>,
 {
-    type Item<'a> = <<F as FnOnce<(&'a mut S, I::Item<'a>,)>>::Output as OptionType>::UnwrapT
+    type Item<'a> = <F as Scanner<'a, S, LendedItem<'a, I>>>::Output
         where
             Self: 'a;
 
     fn next<'a>(&'a mut self) -> Option<Self::Item<'a>> {
-        self.iter.next().and_then(|item| (self.scan)(&mut self.state, item).make_concrete())
+        self.iter.next().and_then(|item| self.scan.call(&mut self.state, item))
     }
 }
 
-pub struct FlatMap<I, J, F>
+pub struct FlatMap<I, F, J>
 where
     I: LendingIter,
     J: LendingIter,
-    F: for<'a> FnMut(I::Item<'a>) -> J,
+    F: for<'b> FnMut(LendedItem<'b, I>) -> J,
 {
-    iter: I,
-    fun: F,
-    curr: Option<J>,
+    pub(crate) iter: I,
+    pub(crate) fun: F,
+    pub(crate) curr: Option<J>,
 }
 
-impl<I, J, F> LendingIter for FlatMap<I, J, F>
+#[gat]
+impl<I, F, J> LendingIter for FlatMap<I, F, J>
 where
     I: LendingIter,
     J: LendingIter,
-    F: for<'a> FnMut(I::Item<'a>) -> J,
+    F: for<'b> FnMut(LendedItem<'b, I>) -> J,
 {
-    type Item<'a> = J::Item<'a>
+    type Item<'a> = LendedItem<'a, J>
         where
             Self: 'a;
 
     fn next(&mut self) -> Option<Self::Item<'_>> {
         loop {
             // SAFETY:
-            // polonius loop case
+            // Item is either dropped or returned by the end of the loop,
+            // so two concurrent mutable references are never created.
             let item = unsafe {
-                extend_lifetime::<HKT!(Option<J::Item<'_>>)>(
-                    self.curr.as_mut().and_then(|i| i.next()),
+                extend_lifetime::<HKT!(Option<LendedItem<'_, J>>)>(
+                    self.curr.as_mut().and_then(|it| it.next()),
                 )
             };
             match item {
+                Some(v) => return Some(v),
                 None => match self.iter.next().map(&mut self.fun) {
+                    Some(it) => self.curr = Some(it),
                     None => return None,
-                    Some(it) => {
-                        self.curr = Some(it);
-                        continue;
-                    }
                 },
-                some => return some,
+            }
+        }
+    }
+}
+
+#[apply(Gat!)]
+pub struct Flatten<I, J>
+where
+    J: LendingIter,
+    I: for<'a> LendingIter<Item<'a> = J>,
+{
+    pub(crate) iter: I,
+    pub(crate) curr: Option<J>,
+}
+
+#[gat]
+impl<I, J> LendingIter for Flatten<I, J>
+where
+    J: LendingIter,
+    I: for<'b> LendingIter<Item<'b> = J>,
+{
+    type Item<'a> = LendedItem<'a, J>
+        where
+            Self: 'a;
+
+    fn next(&mut self) -> Option<Self::Item<'_>> {
+        loop {
+            // SAFETY:
+            // Item is either dropped or returned by the end of the loop,
+            // so two concurrent mutable references are never created.
+            let item = unsafe {
+                extend_lifetime::<HKT!(Option<LendedItem<'_, J>>)>(
+                    self.curr.as_mut().and_then(|it| it.next()),
+                )
+            };
+            match item {
+                Some(v) => return Some(v),
+                None => match self.iter.next() {
+                    Some(it) => self.curr = Some(it),
+                    None => return None,
+                },
             }
         }
     }
@@ -373,8 +429,9 @@ pub struct Fuse<I: LendingIter> {
     pub(crate) avail: bool,
 }
 
+#[gat]
 impl<I: LendingIter> LendingIter for Fuse<I> {
-    type Item<'a> = I::Item<'a>
+    type Item<'a> = LendedItem<'a, I>
     where
         Self: 'a;
 
@@ -386,5 +443,30 @@ impl<I: LendingIter> LendingIter for Fuse<I> {
                 None
             }
         }
+    }
+}
+
+pub struct Inspect<I, F>
+where
+    I: LendingIter,
+    F: for<'a> FnMut(&LendedItem<'a, I>),
+{
+    pub(crate) iter: I,
+    pub(crate) fun: F,
+}
+
+#[gat]
+impl<I, F> LendingIter for Inspect<I, F>
+where
+    I: LendingIter,
+    F: for<'b> FnMut(&LendedItem<'b, I>),
+{
+    type Item<'a> = LendedItem<'a, I> where Self: 'a;
+
+    fn next(&mut self) -> Option<Self::Item<'_>> {
+        self.iter.next().map(|i| {
+            (self.fun)(&i);
+            i
+        })
     }
 }

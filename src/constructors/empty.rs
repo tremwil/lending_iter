@@ -1,12 +1,16 @@
 use core::marker::PhantomData;
 
+use nougat::gat;
+
 use crate::hkt::HKT;
+#[gat(Item)]
 use crate::lending_iter::LendingIter;
 
 pub struct Empty<T: HKT> {
     phantom: PhantomData<T>,
 }
 
+#[gat]
 impl<T> LendingIter for Empty<T>
 where
     T: HKT,
